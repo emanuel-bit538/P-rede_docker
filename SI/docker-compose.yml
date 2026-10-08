@@ -1,0 +1,77 @@
+version: '3.8'
+
+# DEFINIÇÃO DAS REDES (ISOLAMENTO BÁSICO)
+# Criamos duas redes separadas do tipo 'bridge' para simular a segmentação física.
+# Sem um roteador entre elas, o containeres da 'lan_net' não consegue comunicar com o da 'dmz_net'.
+networks:
+  lan_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 192.168.10.0/24  # Faixa de IPs da rede interna (Cliente)
+  dmz_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24    # Faixa de IPs da zona exposta (DMZ)
+
+services:
+  # ROUTER E FIREWALL
+  firewall:
+    image: alpine:latest
+    container_name: firewall
+    # 'NET_ADMIN' é a permissão vital que permite a este container alterar regras de firewall no kernel.
+    cap_add:
+      - NET_ADMIN
+    # 'ip_forward=1' transforma este container num roteador, permitindo que pacotes recebidos numa interface sejam reencaminhados para outra.
+    sysctls:
+      - net.ipv4.ip_forward=1
+    # O firewall é o único equipamento ligado às duas redes simultaneamente.
+    networks:
+      lan_net:
+        ipv4_address: 192.168.10.254 # Porta do router virada para a LAN
+      dmz_net:
+        ipv4_address: 172.20.0.254   # Porta do router virada para a DMZ
+    # Mapeamos o script do nosso computador para dentro do container
+    volumes:
+      - ./firewall/entrypoint.sh:/entrypoint.sh
+    # Comando executado ao ligar o container para aplicar as regras
+    entrypoint: ["/bin/sh", "/entrypoint.sh"]
+
+
+  # CLIENTE
+
+  cliente:
+    image: alpine:latest
+    container_name: cliente
+    cap_add:
+      - NET_ADMIN # Necessário apenas para podermos alterar a rota padrão abaixo
+    tty: true
+    networks:
+      lan_net:
+        ipv4_address: 192.168.10.10
+    # Este comando instala as ferramentas (curl, nmap)
+    # apaga a rota de internet padrão do Docker e obriga todo o tráfego a passar pelo IP do Firewall (192.168.10.254).
+    command: >
+      sh -c "apk add --no-cache curl nmap iproute2 &&
+             ip route del default &&
+             ip route add default via 192.168.10.254 &&
+             tail -f /dev/null"
+
+  # DMZ
+  dmz-web:
+    image: nginx:alpine
+    container_name: dmz-web
+    networks:
+      dmz_net:
+        ipv4_address: 172.20.0.10 # IP fixo onde a porta 80 estará aberta
+
+  dmz-db:
+    image: postgres:alpine
+    container_name: dmz-db
+    environment:
+      POSTGRES_PASSWORD: rycbar123
+    networks:
+      dmz_net:
+        ipv4_address: 172.20.0.20 # IP fixo onde a porta 5432 deve ser bloqueada
+
